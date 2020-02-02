@@ -1,58 +1,42 @@
-// Copyright 2018-2019 the Deno authors. All rights reserved. MIT license.
-use crate::compilers::CompiledModule;
-use crate::compilers::JsCompiler;
-use crate::compilers::JsonCompiler;
-use crate::compilers::TsCompiler;
-use crate::deno_dir;
+// Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
+use crate::compilers::TargetLib;
 use crate::deno_error::permission_denied;
-use crate::file_fetcher::SourceFileFetcher;
-use crate::flags;
+use crate::global_state::ThreadSafeGlobalState;
 use crate::global_timer::GlobalTimer;
 use crate::import_map::ImportMap;
-use crate::msg;
-use crate::ops;
+use crate::metrics::Metrics;
+use crate::ops::JsonOp;
+use crate::ops::MinimalOp;
 use crate::permissions::DenoPermissions;
-use crate::progress::Progress;
-use crate::resources;
-use crate::resources::ResourceId;
-use crate::worker::Worker;
-use deno::Buf;
-use deno::CoreOp;
-use deno::ErrBox;
-use deno::Loader;
-use deno::ModuleSpecifier;
-use deno::OpId;
-use deno::PinnedBuf;
-use futures::future::Shared;
-use futures::Future;
+use crate::web_worker::WebWorker;
+use crate::worker::WorkerChannels;
+use deno_core::Buf;
+use deno_core::CoreOp;
+use deno_core::ErrBox;
+use deno_core::Loader;
+use deno_core::ModuleSpecifier;
+use deno_core::Op;
+use deno_core::ResourceTable;
+use deno_core::ZeroCopyBuf;
+use futures::channel::mpsc;
+use futures::future::FutureExt;
+use futures::future::TryFutureExt;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use serde_json::Value;
 use std;
 use std::collections::HashMap;
-use std::env;
 use std::ops::Deref;
+use std::path::Path;
+use std::pin::Pin;
 use std::str;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 use std::time::Instant;
-use tokio::sync::mpsc as async_mpsc;
-
-pub type WorkerSender = async_mpsc::Sender<Buf>;
-pub type WorkerReceiver = async_mpsc::Receiver<Buf>;
-pub type WorkerChannels = (WorkerSender, WorkerReceiver);
-pub type UserWorkerTable = HashMap<ResourceId, Shared<Worker>>;
-
-#[derive(Default)]
-pub struct Metrics {
-  pub ops_dispatched: AtomicUsize,
-  pub ops_completed: AtomicUsize,
-  pub bytes_sent_control: AtomicUsize,
-  pub bytes_sent_data: AtomicUsize,
-  pub bytes_received: AtomicUsize,
-  pub resolve_count: AtomicUsize,
-  pub compiler_starts: AtomicUsize,
-}
+use tokio::sync::Mutex as AsyncMutex;
 
 /// Isolate cannot be passed between threads but ThreadSafeState can.
 /// ThreadSafeState satisfies Send and Sync. So any state that needs to be
@@ -61,32 +45,22 @@ pub struct ThreadSafeState(Arc<State>);
 
 #[cfg_attr(feature = "cargo-clippy", allow(stutter))]
 pub struct State {
-  pub modules: Arc<Mutex<deno::Modules>>,
+  pub global_state: ThreadSafeGlobalState,
+  pub permissions: Arc<Mutex<DenoPermissions>>,
   pub main_module: Option<ModuleSpecifier>,
-  pub dir: deno_dir::DenoDir,
-  pub argv: Vec<String>,
-  pub permissions: DenoPermissions,
-  pub flags: flags::DenoFlags,
+  pub worker_channels: WorkerChannels,
   /// When flags contains a `.import_map_path` option, the content of the
   /// import map file will be resolved and set.
   pub import_map: Option<ImportMap>,
   pub metrics: Metrics,
-  pub worker_channels: Mutex<WorkerChannels>,
   pub global_timer: Mutex<GlobalTimer>,
-  pub workers: Mutex<UserWorkerTable>,
+  pub workers: Mutex<HashMap<u32, WebWorker>>,
+  pub loading_workers: Mutex<HashMap<u32, mpsc::Receiver<Result<(), ErrBox>>>>,
+  pub next_worker_id: AtomicUsize,
   pub start_time: Instant,
-  /// A reference to this worker's resource.
-  pub resource: resources::Resource,
-  /// Reference to global progress bar.
-  pub progress: Progress,
   pub seeded_rng: Option<Mutex<StdRng>>,
-
-  pub file_fetcher: SourceFileFetcher,
-  pub js_compiler: JsCompiler,
-  pub json_compiler: JsonCompiler,
-  pub ts_compiler: TsCompiler,
-
-  pub include_deno_namespace: bool,
+  pub resource_table: Mutex<ResourceTable>,
+  pub target_lib: TargetLib,
 }
 
 impl Clone for ThreadSafeState {
@@ -103,13 +77,89 @@ impl Deref for ThreadSafeState {
 }
 
 impl ThreadSafeState {
-  pub fn dispatch(
+  pub fn lock_resource_table(&self) -> MutexGuard<ResourceTable> {
+    self.resource_table.lock().unwrap()
+  }
+
+  /// Wrap core `OpDispatcher` to collect metrics.
+  pub fn core_op<D>(
     &self,
-    op_id: OpId,
-    control: &[u8],
-    zero_copy: Option<PinnedBuf>,
-  ) -> CoreOp {
-    ops::dispatch(self, op_id, control, zero_copy)
+    dispatcher: D,
+  ) -> impl Fn(&[u8], Option<ZeroCopyBuf>) -> CoreOp
+  where
+    D: Fn(&[u8], Option<ZeroCopyBuf>) -> CoreOp,
+  {
+    let state = self.clone();
+
+    move |control: &[u8], zero_copy: Option<ZeroCopyBuf>| -> CoreOp {
+      let bytes_sent_control = control.len();
+      let bytes_sent_zero_copy =
+        zero_copy.as_ref().map(|b| b.len()).unwrap_or(0);
+
+      let op = dispatcher(control, zero_copy);
+      state.metrics_op_dispatched(bytes_sent_control, bytes_sent_zero_copy);
+
+      match op {
+        Op::Sync(buf) => {
+          state.metrics_op_completed(buf.len());
+          Op::Sync(buf)
+        }
+        Op::Async(fut) => {
+          let state = state.clone();
+          let result_fut = fut.map_ok(move |buf: Buf| {
+            state.metrics_op_completed(buf.len());
+            buf
+          });
+          Op::Async(result_fut.boxed())
+        }
+        Op::AsyncUnref(fut) => {
+          let state = state.clone();
+          let result_fut = fut.map_ok(move |buf: Buf| {
+            state.metrics_op_completed(buf.len());
+            buf
+          });
+          Op::AsyncUnref(result_fut.boxed())
+        }
+      }
+    }
+  }
+
+  /// This is a special function that provides `state` argument to dispatcher.
+  pub fn stateful_minimal_op<D>(
+    &self,
+    dispatcher: D,
+  ) -> impl Fn(i32, Option<ZeroCopyBuf>) -> Pin<Box<MinimalOp>>
+  where
+    D: Fn(&ThreadSafeState, i32, Option<ZeroCopyBuf>) -> Pin<Box<MinimalOp>>,
+  {
+    let state = self.clone();
+
+    move |rid: i32, zero_copy: Option<ZeroCopyBuf>| -> Pin<Box<MinimalOp>> {
+      dispatcher(&state, rid, zero_copy)
+    }
+  }
+
+  /// This is a special function that provides `state` argument to dispatcher.
+  ///
+  /// NOTE: This only works with JSON dispatcher.
+  /// This is a band-aid for transition to `Isolate.register_op` API as most of our
+  /// ops require `state` argument.
+  pub fn stateful_op<D>(
+    &self,
+    dispatcher: D,
+  ) -> impl Fn(Value, Option<ZeroCopyBuf>) -> Result<JsonOp, ErrBox>
+  where
+    D: Fn(
+      &ThreadSafeState,
+      Value,
+      Option<ZeroCopyBuf>,
+    ) -> Result<JsonOp, ErrBox>,
+  {
+    let state = self.clone();
+
+    move |args: Value,
+          zero_copy: Option<ZeroCopyBuf>|
+          -> Result<JsonOp, ErrBox> { dispatcher(&state, args, zero_copy) }
   }
 }
 
@@ -119,22 +169,17 @@ impl Loader for ThreadSafeState {
     specifier: &str,
     referrer: &str,
     is_main: bool,
-    is_dyn_import: bool,
   ) -> Result<ModuleSpecifier, ErrBox> {
     if !is_main {
       if let Some(import_map) = &self.import_map {
         let result = import_map.resolve(specifier, referrer)?;
-        if result.is_some() {
-          return Ok(result.unwrap());
+        if let Some(r) = result {
+          return Ok(r);
         }
       }
     }
     let module_specifier =
       ModuleSpecifier::resolve_import(specifier, referrer)?;
-
-    if is_dyn_import {
-      self.check_dyn_import(&module_specifier)?;
-    }
 
     Ok(module_specifier)
   }
@@ -143,166 +188,176 @@ impl Loader for ThreadSafeState {
   fn load(
     &self,
     module_specifier: &ModuleSpecifier,
-  ) -> Box<deno::SourceCodeInfoFuture> {
+    maybe_referrer: Option<ModuleSpecifier>,
+    is_dyn_import: bool,
+  ) -> Pin<Box<deno_core::SourceCodeInfoFuture>> {
+    if is_dyn_import {
+      if let Err(e) = self.check_dyn_import(&module_specifier) {
+        return async move { Err(e) }.boxed();
+      }
+    }
+
+    // TODO(bartlomieju): incrementing resolve_count here has no sense...
     self.metrics.resolve_count.fetch_add(1, Ordering::SeqCst);
     let module_url_specified = module_specifier.to_string();
-    Box::new(self.fetch_compiled_module(module_specifier).map(
-      |compiled_module| deno::SourceCodeInfo {
+    let fut = self
+      .global_state
+      .fetch_compiled_module(module_specifier, maybe_referrer, self.target_lib)
+      .map_ok(|compiled_module| deno_core::SourceCodeInfo {
         // Real module name, might be different from initial specifier
         // due to redirections.
         code: compiled_module.code,
         module_url_specified,
         module_url_found: compiled_module.name,
-      },
-    ))
+      });
+
+    fut.boxed()
   }
 }
 
 impl ThreadSafeState {
+  pub fn create_channels() -> (WorkerChannels, WorkerChannels) {
+    let (in_tx, in_rx) = mpsc::channel::<Buf>(1);
+    let (out_tx, out_rx) = mpsc::channel::<Buf>(1);
+    let internal_channels = WorkerChannels {
+      sender: out_tx,
+      receiver: Arc::new(AsyncMutex::new(in_rx)),
+    };
+    let external_channels = WorkerChannels {
+      sender: in_tx,
+      receiver: Arc::new(AsyncMutex::new(out_rx)),
+    };
+    (internal_channels, external_channels)
+  }
+
+  /// If `shared_permission` is None then permissions from globa state are used.
   pub fn new(
-    flags: flags::DenoFlags,
-    argv_rest: Vec<String>,
-    progress: Progress,
-    include_deno_namespace: bool,
+    global_state: ThreadSafeGlobalState,
+    shared_permissions: Option<Arc<Mutex<DenoPermissions>>>,
+    main_module: Option<ModuleSpecifier>,
+    internal_channels: WorkerChannels,
   ) -> Result<Self, ErrBox> {
-    let custom_root = env::var("DENO_DIR").map(String::into).ok();
+    let import_map: Option<ImportMap> =
+      match global_state.flags.import_map_path.as_ref() {
+        None => None,
+        Some(file_path) => Some(ImportMap::load(file_path)?),
+      };
 
-    let (worker_in_tx, worker_in_rx) = async_mpsc::channel::<Buf>(1);
-    let (worker_out_tx, worker_out_rx) = async_mpsc::channel::<Buf>(1);
-    let internal_channels = (worker_out_tx, worker_in_rx);
-    let external_channels = (worker_in_tx, worker_out_rx);
-    let resource = resources::add_worker(external_channels);
-
-    let dir = deno_dir::DenoDir::new(custom_root)?;
-
-    let file_fetcher = SourceFileFetcher::new(
-      dir.deps_cache.clone(),
-      progress.clone(),
-      !flags.reload,
-      flags.no_fetch,
-    )?;
-
-    let ts_compiler = TsCompiler::new(
-      file_fetcher.clone(),
-      dir.gen_cache.clone(),
-      !flags.reload,
-      flags.config_path.clone(),
-    )?;
-
-    let main_module: Option<ModuleSpecifier> = if argv_rest.len() <= 1 {
-      None
-    } else {
-      let root_specifier = argv_rest[1].clone();
-      Some(ModuleSpecifier::resolve_url_or_path(&root_specifier)?)
-    };
-
-    let import_map: Option<ImportMap> = match &flags.import_map_path {
+    let seeded_rng = match global_state.flags.seed {
+      Some(seed) => Some(Mutex::new(StdRng::seed_from_u64(seed))),
       None => None,
-      Some(file_path) => Some(ImportMap::load(file_path)?),
     };
 
-    let mut seeded_rng = None;
-    if let Some(seed) = flags.seed {
-      seeded_rng = Some(Mutex::new(StdRng::seed_from_u64(seed)));
+    let permissions = if let Some(perm) = shared_permissions {
+      perm
+    } else {
+      Arc::new(Mutex::new(global_state.permissions.clone()))
     };
-
-    let modules = Arc::new(Mutex::new(deno::Modules::new()));
 
     let state = State {
+      global_state,
       main_module,
-      modules,
-      dir,
-      argv: argv_rest,
-      permissions: DenoPermissions::from_flags(&flags),
-      flags,
+      permissions,
       import_map,
+      worker_channels: internal_channels,
       metrics: Metrics::default(),
-      worker_channels: Mutex::new(internal_channels),
       global_timer: Mutex::new(GlobalTimer::new()),
-      workers: Mutex::new(UserWorkerTable::new()),
+      workers: Mutex::new(HashMap::new()),
+      loading_workers: Mutex::new(HashMap::new()),
+      next_worker_id: AtomicUsize::new(0),
       start_time: Instant::now(),
-      resource,
-      progress,
       seeded_rng,
-      file_fetcher,
-      ts_compiler,
-      js_compiler: JsCompiler {},
-      json_compiler: JsonCompiler {},
-      include_deno_namespace,
+
+      resource_table: Mutex::new(ResourceTable::default()),
+      target_lib: TargetLib::Main,
     };
 
     Ok(ThreadSafeState(Arc::new(state)))
   }
 
-  pub fn fetch_compiled_module(
-    self: &Self,
-    module_specifier: &ModuleSpecifier,
-  ) -> impl Future<Item = CompiledModule, Error = ErrBox> {
-    let state_ = self.clone();
-
-    self
-      .file_fetcher
-      .fetch_source_file_async(&module_specifier)
-      .and_then(move |out| match out.media_type {
-        msg::MediaType::Unknown => {
-          state_.js_compiler.compile_async(state_.clone(), &out)
-        }
-        msg::MediaType::Json => {
-          state_.json_compiler.compile_async(state_.clone(), &out)
-        }
-        msg::MediaType::TypeScript => {
-          state_.ts_compiler.compile_async(state_.clone(), &out)
-        }
-        msg::MediaType::JavaScript => {
-          if state_.ts_compiler.compile_js {
-            state_.ts_compiler.compile_async(state_.clone(), &out)
-          } else {
-            state_.js_compiler.compile_async(state_.clone(), &out)
-          }
-        }
-      })
-  }
-
-  /// Read main module from argv
-  pub fn main_module(&self) -> Option<ModuleSpecifier> {
-    match &self.main_module {
-      Some(module_specifier) => Some(module_specifier.clone()),
+  /// If `shared_permission` is None then permissions from globa state are used.
+  pub fn new_for_worker(
+    global_state: ThreadSafeGlobalState,
+    shared_permissions: Option<Arc<Mutex<DenoPermissions>>>,
+    main_module: Option<ModuleSpecifier>,
+    internal_channels: WorkerChannels,
+  ) -> Result<Self, ErrBox> {
+    let seeded_rng = match global_state.flags.seed {
+      Some(seed) => Some(Mutex::new(StdRng::seed_from_u64(seed))),
       None => None,
-    }
+    };
+
+    let permissions = if let Some(perm) = shared_permissions {
+      perm
+    } else {
+      Arc::new(Mutex::new(global_state.permissions.clone()))
+    };
+
+    let state = State {
+      global_state,
+      main_module,
+      permissions,
+      import_map: None,
+      worker_channels: internal_channels,
+      metrics: Metrics::default(),
+      global_timer: Mutex::new(GlobalTimer::new()),
+      workers: Mutex::new(HashMap::new()),
+      loading_workers: Mutex::new(HashMap::new()),
+      next_worker_id: AtomicUsize::new(0),
+      start_time: Instant::now(),
+      seeded_rng,
+
+      resource_table: Mutex::new(ResourceTable::default()),
+      target_lib: TargetLib::Worker,
+    };
+
+    Ok(ThreadSafeState(Arc::new(state)))
+  }
+
+  pub fn add_child_worker(&self, worker: WebWorker) -> u32 {
+    let worker_id = self.next_worker_id.fetch_add(1, Ordering::Relaxed) as u32;
+    let mut workers_tl = self.workers.lock().unwrap();
+    workers_tl.insert(worker_id, worker);
+    worker_id
   }
 
   #[inline]
-  pub fn check_read(&self, filename: &str) -> Result<(), ErrBox> {
-    self.permissions.check_read(filename)
+  pub fn check_read(&self, path: &Path) -> Result<(), ErrBox> {
+    self.permissions.lock().unwrap().check_read(path)
   }
 
   #[inline]
-  pub fn check_write(&self, filename: &str) -> Result<(), ErrBox> {
-    self.permissions.check_write(filename)
+  pub fn check_write(&self, path: &Path) -> Result<(), ErrBox> {
+    self.permissions.lock().unwrap().check_write(path)
   }
 
   #[inline]
   pub fn check_env(&self) -> Result<(), ErrBox> {
-    self.permissions.check_env()
+    self.permissions.lock().unwrap().check_env()
   }
 
   #[inline]
-  pub fn check_net(&self, host_and_port: &str) -> Result<(), ErrBox> {
-    self.permissions.check_net(host_and_port)
+  pub fn check_net(&self, hostname: &str, port: u16) -> Result<(), ErrBox> {
+    self.permissions.lock().unwrap().check_net(hostname, port)
   }
 
   #[inline]
   pub fn check_net_url(&self, url: &url::Url) -> Result<(), ErrBox> {
-    self.permissions.check_net_url(url)
+    self.permissions.lock().unwrap().check_net_url(url)
   }
 
   #[inline]
   pub fn check_run(&self) -> Result<(), ErrBox> {
-    self.permissions.check_run()
+    self.permissions.lock().unwrap().check_run()
+  }
+
+  #[inline]
+  pub fn check_plugin(&self, filename: &Path) -> Result<(), ErrBox> {
+    self.permissions.lock().unwrap().check_plugin(filename)
   }
 
   pub fn check_dyn_import(
-    self: &Self,
+    &self,
     module_specifier: &ModuleSpecifier,
   ) -> Result<(), ErrBox> {
     let u = module_specifier.as_url();
@@ -312,13 +367,13 @@ impl ThreadSafeState {
         Ok(())
       }
       "file" => {
-        let filename = u
+        let path = u
           .to_file_path()
           .unwrap()
           .into_os_string()
           .into_string()
           .unwrap();
-        self.check_read(&filename)?;
+        self.check_read(Path::new(&path))?;
         Ok(())
       }
       _ => Err(permission_denied()),
@@ -326,12 +381,23 @@ impl ThreadSafeState {
   }
 
   #[cfg(test)]
-  pub fn mock(argv: Vec<String>) -> ThreadSafeState {
+  pub fn mock(
+    argv: Vec<String>,
+    internal_channels: WorkerChannels,
+  ) -> ThreadSafeState {
+    let module_specifier = if argv.is_empty() {
+      None
+    } else {
+      let module_specifier = ModuleSpecifier::resolve_url_or_path(&argv[0])
+        .expect("Invalid entry module");
+      Some(module_specifier)
+    };
+
     ThreadSafeState::new(
-      flags::DenoFlags::default(),
-      argv,
-      Progress::new(),
-      true,
+      ThreadSafeGlobalState::mock(argv),
+      None,
+      module_specifier,
+      internal_channels,
     )
     .unwrap()
   }
@@ -364,21 +430,9 @@ impl ThreadSafeState {
 #[test]
 fn thread_safe() {
   fn f<S: Send + Sync>(_: S) {}
-  f(ThreadSafeState::mock(vec![
-    String::from("./deno"),
-    String::from("hello.js"),
-  ]));
-}
-
-#[test]
-fn import_map_given_for_repl() {
-  let _result = ThreadSafeState::new(
-    flags::DenoFlags {
-      import_map_path: Some("import_map.json".to_string()),
-      ..flags::DenoFlags::default()
-    },
-    vec![String::from("./deno")],
-    Progress::new(),
-    true,
-  );
+  let (int, _) = ThreadSafeState::create_channels();
+  f(ThreadSafeState::mock(
+    vec![String::from("./deno"), String::from("hello.js")],
+    int,
+  ));
 }

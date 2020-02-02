@@ -13,6 +13,13 @@ pub struct DiskCache {
   pub location: PathBuf,
 }
 
+fn with_io_context<T: AsRef<str>>(
+  e: &std::io::Error,
+  context: T,
+) -> std::io::Error {
+  std::io::Error::new(e.kind(), format!("{} (for '{}')", e, context.as_ref()))
+}
+
 impl DiskCache {
   pub fn new(location: &Path) -> Self {
     // TODO: ensure that 'location' is a directory
@@ -21,7 +28,7 @@ impl DiskCache {
     }
   }
 
-  pub fn get_cache_filename(self: &Self, url: &Url) -> PathBuf {
+  pub fn get_cache_filename(&self, url: &Url) -> PathBuf {
     let mut out = PathBuf::new();
 
     let scheme = url.scheme();
@@ -83,7 +90,7 @@ impl DiskCache {
   }
 
   pub fn get_cache_filename_with_extension(
-    self: &Self,
+    &self,
     url: &Url,
     extension: &str,
   ) -> PathBuf {
@@ -99,21 +106,23 @@ impl DiskCache {
     }
   }
 
-  pub fn get(self: &Self, filename: &Path) -> std::io::Result<Vec<u8>> {
+  pub fn get(&self, filename: &Path) -> std::io::Result<Vec<u8>> {
     let path = self.location.join(filename);
     fs::read(&path)
   }
 
-  pub fn set(self: &Self, filename: &Path, data: &[u8]) -> std::io::Result<()> {
+  pub fn set(&self, filename: &Path, data: &[u8]) -> std::io::Result<()> {
     let path = self.location.join(filename);
     match path.parent() {
-      Some(ref parent) => fs::create_dir_all(parent),
+      Some(ref parent) => fs::create_dir_all(parent)
+        .map_err(|e| with_io_context(&e, format!("{:#?}", &path))),
       None => Ok(()),
     }?;
     deno_fs::write_file(&path, data, 0o666)
+      .map_err(|e| with_io_context(&e, format!("{:#?}", &path)))
   }
 
-  pub fn remove(self: &Self, filename: &Path) -> std::io::Result<()> {
+  pub fn remove(&self, filename: &Path) -> std::io::Result<()> {
     let path = self.location.join(filename);
     fs::remove_file(path)
   }

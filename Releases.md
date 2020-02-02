@@ -6,6 +6,266 @@ https://github.com/denoland/deno/releases
 We also have one-line install commands at
 https://github.com/denoland/deno_install
 
+### v0.31.0 / 2020.01.24
+
+- BREAKING CHANGE: remove support for blob: URL in Worker (#3722)
+- BREAKING CHANGE: remove Deno namespace support and noDenoNamespace option in
+  Worker constructor (#3722)
+- BREAKING CHANGE: rename dial to connect and dialTLS to connectTLS (#3710)
+- feat: Add signal handlers (#3757)
+- feat: Implemented alternative open mode in files (#3119)
+- feat: Use globalThis to reference global scope (#3719)
+- feat: add AsyncUnref ops (#3721)
+- feat: stabilize net Addr (#3709)
+- fix: correct yaml's sortKeys type (#3708)
+- refactor: Improve path handling in permission checks (#3714)
+- refactor: Improve web workers (#3722, #3732, #3730, #3735)
+- refactor: Reduce number of ErrorKind variants (#3662)
+- refactor: Remove Isolate.shared_response_buf optimization (#3759)
+- upgrade: rusty_v8 (#3764, #3769, #3741)
+
+### v0.30.0 / 2020.01.17
+
+- BREAKING CHANGE Revert "feat(flags): script arguments come after '--'" (#3681)
+- feat(fs): add more unix-only fields to FileInfo (#3680)
+- feat(http): allow response body to be string (#3705)
+- feat(std/node): Added node timers builtin (#3634)
+- feat: Add Deno.symbols and move internal fields for test (#3693)
+- feat: Add gzip, brotli and ETag support for file fetcher (#3597)
+- feat: support individual async handler for each op (#3690)
+- fix(workers): minimal error handling and async module loading (#3665)
+- fix: Remove std/multipart (#3647)
+- fix: Resolve read/write whitelists from CWD (#3684)
+- fix: process hangs when fetch called (#3657)
+- perf: Create an old program to be used in snapshot (#3644, #3661)
+- perf: share http client in file fetcher (#3683)
+- refactor: remove Isolate.current_send_cb_info and DenoBuf, port
+  Isolate.shared_response_buf (#3643)
+
+### v0.29.0 / 2020.01.09
+
+- BREAKING CHANGE Remove xeval subcommand (#3630)
+- BREAKING CHANGE script arguments should come after '--' (#3621)
+- BREAKING CHANGE Deno.mkdir should conform to style guide BREAKING CHANGE
+  (#3617)
+- BREAKING CHANGE Deno.args only includes script args (#3628)
+- BREAKING CHANGE Rename crates: 'deno' to 'deno_core' and 'deno_cli' to 'deno'
+  (#3600)
+- feat: Add Deno.create (#3629)
+- feat: Add compiler API (#3442)
+- fix(ws): Handshake with correctly empty search string (#3587)
+- fix(yaml): Export parseAll (#3592)
+- perf: TextEncoder.encode improvement (#3596, #3589)
+- refactor: Replace libdeno with rusty_v8 (#3556, #3601, #3602, #3605, #3611,
+  #3613, #3615)
+- upgrade: V8 8.1.108 (#3623)
+
+### v0.28.1 / 2020.01.03
+
+- feat(http): make req.body a Reader (#3575)
+- fix: dynamically linking to OpenSSL (#3586)
+
+### v0.28.0 / 2020.01.02
+
+- feat: Add Deno.dir("executable") (#3526)
+- feat: Add missing mod.ts files in std (#3509)
+- fix(repl): Do not crash on async op reject (#3527)
+- fix(std/encoding/yaml): support document separator in parseAll (#3535)
+- fix: Allow reading into a 0-length array (#3329)
+- fix: Drop unnecessary Object.assign from createResolvable() (#3548)
+- fix: Expose shutdown() and ShutdownMode TS def (#3558, #3560)
+- fix: Remove wildcard export in uuid module (#3540)
+- fix: Return null on error in Deno.dir() (#3531)
+- fix: Use shared HTTP client (#3563)
+- fix: Use sync ops when clearing the console (#3533)
+- refactor: Move HttpBody to cli/http_util.rs (#3569)
+- upgrade: Reqwest to 0.10.0 (#3567)
+- upgrade: Rust to 1.40.0 (#3542)
+- upgrade: Tokio 0.2 (#3418, #3571)
+
+### v0.27.0 / 2019.12.18
+
+- feat: Support utf8 in file_server (#3495)
+- feat: add help & switch to flags to file_server (#3489)
+- feat: fetch should support URL instance as input (#3496)
+- feat: replace Deno.homeDir with Deno.dir (#3491, #3518)
+- feat: show detailed version with --version (#3507)
+- fix(installer): installs to the wrong directory on Windows (#3462)
+- fix(std/http): close connection on .respond() error (#3475)
+- fix(std/node): better error message for read perm in require() (#3502)
+- fix(timer): due/now Math.max instead of min (#3477)
+- fix: Improve empty test case error messages (#3514)
+- fix: Only swallow NotFound errors in std/fs/expandGlob() (#3479)
+- fix: decoding uri in file_server (#3187)
+- fix: file_server should get file and fileInfo concurrently (#3486)
+- fix: file_server swallowing permission errors (#3467)
+- fix: isolate tests silently failing (#3459)
+- fix: permission errors are swallowed in fs.exists, fs.emptyDir, fs.copy
+  (#3493, #3501, #3504)
+- fix: plugin ops should change op count metrics (#3455)
+- fix: release assets not being executable (#3480)
+- upgrade: tokio 0.2 in deno_core_http_bench, take2 (#3435)
+- upgrade: upgrade subcommand links to v0.26.0 (#3492)
+
+### v0.26.0 / 2019.12.05
+
+- feat: Add --no-remote, rename --no-fetch to --cached-only (#3417)
+- feat: Native plugins AKA dlopen (#3372)
+- fix: Improve html for file_server (#3423)
+- fix: MacOS Catalina build failures (#3441)
+- fix: Realpath behavior in windows (#3425)
+- fix: Timer/microtask ordering (#3439)
+- fix: Tweaks to arg_hacks and add v8-flags to repl (#3409)
+- refactor: Disable eager polling for ops (#3434)
+
+### v0.25.0 / 2019.11.26
+
+- feat: Support named exports on bundles (#3352)
+- feat: Add --check for deno fmt (#3369)
+- feat: Add Deno.realpath (#3404)
+- feat: Add ignore parser for std/prettier (#3399)
+- feat: Add std/encoding/yaml module (#3361)
+- feat: Add std/node polyfill for require() (#3382, #3380)
+- feat: Add std/node/process (#3368)
+- feat: Allow op registration during calls in core (#3375)
+- feat: Better error message for missing module (#3402)
+- feat: Support load yaml/yml prettier config (#3370)
+- fix: Make private namespaces in lib.deno_runtime.d.ts more private (#3400)
+- fix: Remote .wasm import content type issue (#3351)
+- fix: Run std tests with cargo test (#3344)
+- fix: deno fmt should respect prettierrc and prettierignore (#3346)
+- fix: std/datetime toIMF bug (#3357)
+- fix: better error for 'relative import path not prefixed with...' (#3405)
+- refactor: Elevate DenoPermissions lock to top level (#3398)
+- refactor: Reorganize flags, removes ability to specify run arguments like
+  `--allow-net` after the script (#3389)
+- refactor: Use futures 0.3 API (#3358, #3359, #3363, #3388, #3381)
+- chore: Remove unneeded tokio deps (#3376)
+
+### v0.24.0 / 2019.11.14
+
+- feat: Add Node compat module std/node (#3319)
+- feat: Add permissions.request (#3296)
+- feat: Add prettier flags to deno fmt (#3314)
+- feat: Allow http server to take { hostname, port } argument (#3233)
+- feat: Make bundles fully standalone (#3325)
+- feat: Support .wasm via imports (#3328)
+- fix: Check for closing status when iterating Listener (#3309)
+- fix: Error handling in std/fs/walk() (#3318)
+- fix: Exclude prebuilt from deno_src release (#3272)
+- fix: Turn on TS strict mode for deno_typescript (#3330)
+- fix: URL parse bug (#3316)
+- refactor: resources and workers (#3285, #3271, #3274, #3342, #3290)
+- upgrade: Prettier 1.19 (#3275, #3305)
+- upgrade: Rust deps (#3292)
+- upgrade: TypeScript 3.7 (#3275)
+- upgrade: V8 8.0.192
+
+### v0.23.0 / 2019.11.04
+
+- feat: Add serveTLS and listenAndServeTLS (#3257)
+- feat: Lockfile support (#3231)
+- feat: Adds custom inspect method for URL (#3241)
+- fix: Support for deep `Map` equality with `asserts#equal` (#3236, #3258)
+- fix: Make EOF unique symbol (#3244)
+- fix: Prevent customInspect error from crashing console (#3226)
+
+### v0.22.0 / 2019.10.28
+
+- feat: Deno.listenTLS (#3152)
+- feat: Publish source tarballs for releases (#3203)
+- feat: Support named imports/exports for subset of properties in JSON modules
+  (#3210)
+- feat: Use web standard Permissions API (#3200)
+- feat: Remove --no-prompt flag, fail on missing permissions (#3183)
+- feat: top-level-for-await (#3212)
+- feat: Add ResourceTable in core (#3150)
+- feat: Re-enable standard stream support for fetch bodies (#3192)
+- feat: Add CustomInspect for Headers (#3130)
+- fix: Cherry-pick depot_tools 6a1d778 to fix macOS Cataliona issues (#3175)
+- fix: Remove runtime panics in op dispatch (#3176, #3202, #3131)
+- fix: BufReader.readString to actually return Deno.EOF at end (#3191)
+- perf: faster TextDecoder (#3180, #3204)
+- chore: Reenable std tests that were disabled during merge (#3159)
+- chore: Remove old website (#3194, #3181)
+- chore: Use windows-2019 image in Github Actions (#3198)
+- chore: use v0.21.0 for subcommands (#3168)
+- upgrade: V8 to 7.9.317.12 (#3208)
+
+### v0.21.0 / 2019.10.19
+
+- feat: --reload flag to take arg for partial reload (#3109)
+- feat: Allow "deno eval" to run code as module (#3148)
+- feat: support --allow-net=:4500 (#3115)
+- fix: Ensure DENO_DIR when saving the REPL history (#3106)
+- fix: Update echo_server to new listen API (denoland/deno_std#625)
+- fix: [prettier] deno fmt should format jsx/tsx files (#3118)
+- fix: [tls] op_dial_tls is not registerd and broken (#3121)
+- fix: clearTimer bug (#3143)
+- fix: remote jsx/tsx files were compiled as js/ts (#3125)
+- perf: eager poll async ops in Isolate (#3046, #3128)
+- chore: Move std/fs/path to std/path (#3100)
+- upgrade: V8 to 7.9.304 (#3127)
+- upgrade: prettier type definition (#3101)
+- chore: Add debug build to github actions (#3127)
+- chore: merge deno_std into deno repo (#3091, #3096)
+
+### v0.20.0 / 2019.10.06
+
+In deno:
+
+- feat: Add Deno.hostname() (#3032)
+- feat: Add support for passing a key to Deno.env() (#2952)
+- feat: JSX Support (#3038)
+- feat: Replace Isolate::set_dispatch with Isolate::register_op (#3002, #3039,
+  #3041)
+- feat: window.onunload (#3023)
+- fix: Async compiler processing (#3043)
+- fix: Implement ignoreBOM option of UTF8Decoder in text_encoding (#3040)
+- fix: Support top-level-await in TypeScript (#3024)
+- fix: iterators on UrlSearchParams (#3044)
+- fix: listenDefaults/dialDefaults may be overriden in some cases (#3027)
+- upgrade: V8 to 7.9.218 (#3067)
+- upgrade: rust to 1.38.0 (#3030)
+- chore: Migrate CI to github actions (#3052, #3056, #3049, #3071, #3076, #3070,
+  #3066, #3061, #3010)
+- chore: Remove deno_cli_snapshots crate. Move //js to //cli/js (#3064)
+- chore: use xeval from deno_std (#3058)
+
+In deno_std:
+
+- feat: test runner v2 (denoland/deno_std#604)
+- feat: wss support with dialTLS (denoland/deno_std#615)
+- fix(ws): mask must not be set by default for server (denoland/deno_std#616)
+- fix: Implement expandGlob() and expandGlobSync() (denoland/deno_std#617)
+- upgrade: eslint and @typescript-eslint (denoland/deno_std#621)
+
+### v0.19.0 / 2019.09.24
+
+In deno:
+
+- feat: Add Deno.dialTLS()
+- feat: Make deno_cli installable via crates.io (#2946)
+- feat: Remove test.py, use cargo test as test frontend (#2967)
+- feat: dial/listen API change (#3000)
+- feat: parallelize downloads from TS compiler (#2949)
+- fix: Make `window` compatible with ts 3.6 (#2984)
+- fix: Remove some non-standard web API constructors (#2970)
+- fix: debug logging in runtime/compiler (#2953)
+- fix: flag parsing of config file (#2996)
+- fix: reschedule global timer if it fires earlier than expected (#2989)
+- fix: type directive parsing (#2954)
+- upgrade: V8 to 7.9.110 for top-level-await (#3015)
+- upgrade: to TypeScript 3.6.3 (#2969)
+
+In deno_std:
+
+- feat: Implement BufReader.readString (denoland/deno_std#607)
+- fix: TOML's key encoding (denoland/deno_std#612)
+- fix: remove //testing/main.ts (denoland/deno_std#605)
+- fix: types in example_client for ws module (denoland/deno_std#609)
+- upgrade: mime-db to commit c50e0d1 (denoland/deno_std#608)
+
 ### v0.18.0 / 2019.09.13
 
 In deno:

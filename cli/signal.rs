@@ -1,4 +1,5 @@
-use deno::ErrBox;
+// Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
+use deno_core::ErrBox;
 
 #[cfg(unix)]
 pub fn kill(pid: i32, signo: i32) -> Result<(), ErrBox> {

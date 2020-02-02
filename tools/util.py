@@ -1,4 +1,4 @@
-# Copyright 2018-2019 the Deno authors. All rights reserved. MIT license.
+# Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
 import collections
 import os
 import re
@@ -236,9 +236,6 @@ def parse_exit_code(s):
 def enable_ansi_colors():
     if os.name != 'nt':
         return True  # On non-windows platforms this just works.
-    elif "CI" in os.environ:
-        return True  # Ansi escape codes work out of the box on Appveyor.
-
     return enable_ansi_colors_win10()
 
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env python
-# Copyright 2018-2019 the Deno authors. All rights reserved. MIT license.
+# Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
 import os
 import sys
 import time
 import subprocess
 import util
+import third_party
 
 # Some of the benchmarks in this file have been renamed. In case the history
 # somehow gets messed up:
@@ -12,141 +13,126 @@ import util
 #   "deno_tcp" was once called "deno"
 #   "deno_http" was once called "deno_net_http"
 
-DURATION = "10s"
+DURATION = "20s"
 
 LAST_PORT = 4544
 
 
-def get_addr(port=None):
+def server_addr(port):
+    return "0.0.0.0:%s" % port
+
+
+def get_port(port=None):
     global LAST_PORT
     if port is None:
         port = LAST_PORT
         LAST_PORT = LAST_PORT + 1
-    return ("127.0.0.1:%d" % (port))
+    # Return port as str because all usages below are as a str and having it an
+    # integer just adds complexity.
+    return str(port)
 
 
 def deno_tcp(deno_exe):
-    addr = get_addr()
-    deno_cmd = [deno_exe, "run", "--allow-net", "tools/deno_tcp.ts", addr]
-    print "http_benchmark testing DENO tcp."
-    return run(deno_cmd, addr)
-
-
-def deno_tcp_current_thread(deno_exe):
-    addr = get_addr()
+    port = get_port()
     deno_cmd = [
-        deno_exe, "run", "--current-thread", "--allow-net",
-        "tools/deno_tcp.ts", addr
+        deno_exe, "run", "--allow-net", "tools/deno_tcp.ts",
+        server_addr(port)
     ]
-    print "http_benchmark testing DENO tcp (single-thread)."
-    return run(deno_cmd, addr)
+    print "http_benchmark testing DENO tcp."
+    return run(deno_cmd, port)
 
 
 def deno_http(deno_exe):
-    addr = get_addr()
+    port = get_port()
     deno_cmd = [
-        deno_exe, "run", "--allow-net",
-        "js/deps/https/deno.land/std/http/http_bench.ts", addr
+        deno_exe, "run", "--allow-net", "std/http/http_bench.ts",
+        server_addr(port)
     ]
     print "http_benchmark testing DENO using net/http."
-    return run(
-        deno_cmd,
-        addr,
-        merge_env={
-            # Load from //js/deps/https/deno.land/net/ submodule.
-            "DENO_DIR": os.path.join(util.root_path, "js")
-        })
+    return run(deno_cmd, port)
 
 
 def deno_tcp_proxy(deno_exe, hyper_hello_exe):
-    addr = get_addr()
-    origin_addr = get_addr()
+    port = get_port()
+    origin_port = get_port()
     deno_cmd = [
-        deno_exe, "run", "--allow-net", "tools/deno_tcp_proxy.ts", addr,
-        origin_addr
+        deno_exe, "run", "--allow-net", "tools/deno_tcp_proxy.ts",
+        server_addr(port),
+        server_addr(origin_port)
     ]
     print "http_proxy_benchmark testing DENO using net/tcp."
     return run(
         deno_cmd,
-        addr,
-        merge_env={"DENO_DIR": os.path.join(util.root_path, "js")},
-        origin_cmd=http_proxy_origin(hyper_hello_exe, origin_addr))
+        port,
+        origin_cmd=http_proxy_origin(hyper_hello_exe, origin_port))
 
 
 def deno_http_proxy(deno_exe, hyper_hello_exe):
-    addr = get_addr()
-    origin_addr = get_addr()
+    port = get_port()
+    origin_port = get_port()
     deno_cmd = [
-        deno_exe, "run", "--allow-net", "tools/deno_http_proxy.ts", addr,
-        origin_addr
+        deno_exe, "run", "--allow-net", "tools/deno_http_proxy.ts",
+        server_addr(port),
+        server_addr(origin_port)
     ]
     print "http_proxy_benchmark testing DENO using net/http."
     return run(
         deno_cmd,
-        addr,
-        merge_env={"DENO_DIR": os.path.join(util.root_path, "js")},
-        origin_cmd=http_proxy_origin(hyper_hello_exe, origin_addr))
+        port,
+        origin_cmd=http_proxy_origin(hyper_hello_exe, origin_port))
 
 
 def deno_core_single(exe):
     print "http_benchmark testing deno_core_single"
-    return run([exe, "--single-thread"], "127.0.0.1:4544")
+    return run([exe, "--single-thread"], 4544)
 
 
 def deno_core_multi(exe):
     print "http_benchmark testing deno_core_multi"
-    return run([exe, "--multi-thread"], "127.0.0.1:4544")
+    return run([exe, "--multi-thread"], 4544)
 
 
 def node_http():
-    addr = get_addr()
-    node_cmd = ["node", "tools/node_http.js", addr.split(":")[1]]
+    port = get_port()
+    node_cmd = ["node", "tools/node_http.js", port]
     print "http_benchmark testing NODE."
-    return run(node_cmd, addr)
+    return run(node_cmd, port)
 
 
 def node_http_proxy(hyper_hello_exe):
-    addr = get_addr()
-    origin_addr = get_addr()
-    node_cmd = [
-        "node", "tools/node_http_proxy.js",
-        addr.split(":")[1],
-        origin_addr.split(":")[1]
-    ]
+    port = get_port()
+    origin_port = get_port()
+    node_cmd = ["node", "tools/node_http_proxy.js", port, origin_port]
     print "http_proxy_benchmark testing NODE."
-    return run(node_cmd, addr, None,
-               http_proxy_origin(hyper_hello_exe, origin_addr))
+    return run(node_cmd, port, None,
+               http_proxy_origin(hyper_hello_exe, origin_port))
 
 
 def node_tcp_proxy(hyper_hello_exe):
-    addr = get_addr()
-    origin_addr = get_addr()
-    node_cmd = [
-        "node", "tools/node_tcp_proxy.js",
-        addr.split(":")[1],
-        origin_addr.split(":")[1]
-    ]
+    port = get_port()
+    origin_port = get_port()
+    node_cmd = ["node", "tools/node_tcp_proxy.js", port, origin_port]
     print "http_proxy_benchmark testing NODE tcp."
-    return run(node_cmd, addr, None,
-               http_proxy_origin(hyper_hello_exe, origin_addr))
+    return run(node_cmd, port, None,
+               http_proxy_origin(hyper_hello_exe, origin_port))
 
 
 def node_tcp():
-    addr = get_addr()
-    node_cmd = ["node", "tools/node_tcp.js", addr.split(":")[1]]
+    port = get_port()
+    node_cmd = ["node", "tools/node_tcp.js", port]
     print "http_benchmark testing node_tcp.js"
-    return run(node_cmd, addr)
+    return run(node_cmd, port)
 
 
-def http_proxy_origin(hyper_hello_exe, addr):
-    return [hyper_hello_exe, addr.split(":")[1]]
+def http_proxy_origin(hyper_hello_exe, port):
+    return [hyper_hello_exe, port]
 
 
 def hyper_http(hyper_hello_exe):
-    addr = get_addr()
-    hyper_cmd = [hyper_hello_exe, addr.split(":")[1]]
+    port = get_port()
+    hyper_cmd = [hyper_hello_exe, port]
     print "http_benchmark testing RUST hyper."
-    return run(hyper_cmd, addr)
+    return run(hyper_cmd, port)
 
 
 def http_benchmark(build_dir):
@@ -157,7 +143,6 @@ def http_benchmark(build_dir):
     return {
         # "deno_tcp" was once called "deno"
         "deno_tcp": deno_tcp(deno_exe),
-        "deno_tcp_current_thread": deno_tcp_current_thread(deno_exe),
         # "deno_http" was once called "deno_net_http"
         "deno_http": deno_http(deno_exe),
         "deno_proxy": deno_http_proxy(deno_exe, hyper_hello_exe),
@@ -173,7 +158,7 @@ def http_benchmark(build_dir):
     }
 
 
-def run(server_cmd, addr, merge_env=None, origin_cmd=None):
+def run(server_cmd, port, merge_env=None, origin_cmd=None):
 
     # Run deno echo server in the background.
     if merge_env is None:
@@ -191,13 +176,15 @@ def run(server_cmd, addr, merge_env=None, origin_cmd=None):
     if origin_cmd is not None:
         origin = subprocess.Popen(origin_cmd, env=env)
 
+    print server_cmd
     server = subprocess.Popen(server_cmd, env=env)
 
-    time.sleep(10)  # wait for server to wake up. TODO racy.
+    time.sleep(5)  # wait for server to wake up. TODO racy.
 
     try:
-        cmd = "third_party/wrk/%s/wrk -d %s --latency http://%s/" % (
-            util.platform(), DURATION, addr)
+        wrk = third_party.get_prebuilt_tool_path("wrk")
+        assert os.path.exists(wrk)
+        cmd = "%s -d %s --latency http://127.0.0.1:%s/" % (wrk, DURATION, port)
         print cmd
         output = subprocess.check_output(cmd, shell=True)
         stats = util.parse_wrk_output(output)

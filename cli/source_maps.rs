@@ -1,7 +1,7 @@
-// Copyright 2018-2019 the Deno authors. All rights reserved. MIT license.
-//! This mod provides functions to remap a deno::V8Exception based on a source map
-use deno::StackFrame;
-use deno::V8Exception;
+// Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
+//! This mod provides functions to remap a deno_core::V8Exception based on a source map
+use deno_core::StackFrame;
+use deno_core::V8Exception;
 use serde_json;
 use source_map_mappings::parse_mappings;
 use source_map_mappings::Bias;
@@ -74,9 +74,9 @@ fn builtin_source_map(_: &str) -> Option<Vec<u8>> {
 #[cfg(not(feature = "check-only"))]
 fn builtin_source_map(script_name: &str) -> Option<Vec<u8>> {
   if script_name.ends_with("CLI_SNAPSHOT.js") {
-    Some(deno_cli_snapshots::CLI_SNAPSHOT_MAP.to_vec())
+    Some(crate::js::CLI_SNAPSHOT_MAP.to_vec())
   } else if script_name.ends_with("COMPILER_SNAPSHOT.js") {
-    Some(deno_cli_snapshots::COMPILER_SNAPSHOT_MAP.to_vec())
+    Some(crate::js::COMPILER_SNAPSHOT_MAP.to_vec())
   } else {
     None
   }
@@ -110,8 +110,8 @@ pub fn apply_source_map<G: SourceMapGetter>(
   // source file map.
   let end_column = match v8_exception.end_column {
     Some(ec) => {
-      if start_column.is_some() {
-        Some(ec - (v8_exception.start_column.unwrap() - start_column.unwrap()))
+      if let Some(sc) = start_column {
+        Some(ec - (v8_exception.start_column.unwrap() - sc))
       } else {
         None
       }
@@ -120,16 +120,17 @@ pub fn apply_source_map<G: SourceMapGetter>(
   };
   // if there is a source line that we might be different in the source file, we
   // will go fetch it from the getter
-  let source_line = if v8_exception.source_line.is_some()
-    && script_resource_name.is_some()
-    && line_number.is_some()
-  {
-    getter.get_source_line(
-      &v8_exception.script_resource_name.clone().unwrap(),
-      line_number.unwrap() as usize,
-    )
-  } else {
-    v8_exception.source_line.clone()
+  let source_line = match line_number {
+    Some(ln)
+      if v8_exception.source_line.is_some()
+        && script_resource_name.is_some() =>
+    {
+      getter.get_source_line(
+        &v8_exception.script_resource_name.clone().unwrap(),
+        ln as usize,
+      )
+    }
+    _ => v8_exception.source_line.clone(),
   };
 
   V8Exception {
@@ -259,8 +260,12 @@ mod tests {
   impl SourceMapGetter for MockSourceMapGetter {
     fn get_source_map(&self, script_name: &str) -> Option<Vec<u8>> {
       let s = match script_name {
-        "foo_bar.ts" => r#"{"sources": ["foo_bar.ts"], "mappings":";;;IAIA,OAAO,CAAC,GAAG,CAAC,qBAAqB,EAAE,EAAE,CAAC,OAAO,CAAC,CAAC;IAC/C,OAAO,CAAC,GAAG,CAAC,eAAe,EAAE,IAAI,CAAC,QAAQ,CAAC,IAAI,CAAC,CAAC;IACjD,OAAO,CAAC,GAAG,CAAC,WAAW,EAAE,IAAI,CAAC,QAAQ,CAAC,EAAE,CAAC,CAAC;IAE3C,OAAO,CAAC,GAAG,CAAC,GAAG,CAAC,CAAC"}"#,
-        "bar_baz.ts" => r#"{"sources": ["bar_baz.ts"], "mappings":";;;IAEA,CAAC,KAAK,IAAI,EAAE;QACV,MAAM,GAAG,GAAG,sDAAa,OAAO,2BAAC,CAAC;QAClC,OAAO,CAAC,GAAG,CAAC,GAAG,CAAC,CAAC;IACnB,CAAC,CAAC,EAAE,CAAC;IAEQ,QAAA,GAAG,GAAG,KAAK,CAAC;IAEzB,OAAO,CAAC,GAAG,CAAC,GAAG,CAAC,CAAC"}"#,
+        "foo_bar.ts" => {
+          r#"{"sources": ["foo_bar.ts"], "mappings":";;;IAIA,OAAO,CAAC,GAAG,CAAC,qBAAqB,EAAE,EAAE,CAAC,OAAO,CAAC,CAAC;IAC/C,OAAO,CAAC,GAAG,CAAC,eAAe,EAAE,IAAI,CAAC,QAAQ,CAAC,IAAI,CAAC,CAAC;IACjD,OAAO,CAAC,GAAG,CAAC,WAAW,EAAE,IAAI,CAAC,QAAQ,CAAC,EAAE,CAAC,CAAC;IAE3C,OAAO,CAAC,GAAG,CAAC,GAAG,CAAC,CAAC"}"#
+        }
+        "bar_baz.ts" => {
+          r#"{"sources": ["bar_baz.ts"], "mappings":";;;IAEA,CAAC,KAAK,IAAI,EAAE;QACV,MAAM,GAAG,GAAG,sDAAa,OAAO,2BAAC,CAAC;QAClC,OAAO,CAAC,GAAG,CAAC,GAAG,CAAC,CAAC;IACnB,CAAC,CAAC,EAAE,CAAC;IAEQ,QAAA,GAAG,GAAG,KAAK,CAAC;IAEzB,OAAO,CAAC,GAAG,CAAC,GAAG,CAAC,CAAC"}"#
+        }
         _ => return None,
       };
       Some(s.as_bytes().to_owned())
@@ -407,7 +412,7 @@ mod tests {
     assert_eq!(actual.message, "TypeError: baz");
     // Because this is accessing the live bundle, this test might be more fragile
     assert_eq!(actual.frames.len(), 1);
-    assert!(actual.frames[0].script_name.ends_with("js/window.ts"));
+    assert!(actual.frames[0].script_name.ends_with("/dom_types.ts"));
   }
 
   #[test]

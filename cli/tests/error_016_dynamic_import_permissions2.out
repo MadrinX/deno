@@ -1,2 +1,2 @@
 [WILDCARD]
-error: Uncaught TypeError: permission denied
+error: Uncaught TypeError: read access to "[WILDCARD]passwd", run again with the --allow-read flag
